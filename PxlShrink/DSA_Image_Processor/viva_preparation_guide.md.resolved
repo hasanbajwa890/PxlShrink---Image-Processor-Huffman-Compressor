@@ -1,0 +1,529 @@
+# 🎓 VisionEngine Pro — Complete Viva Preparation Guide
+
+## Table of Contents
+1. [Interface Layout — What Each Part Does](#1-interface-layout)
+2. [Complete Workflow — Step by Step](#2-complete-workflow)
+3. [File-by-File Code Explanation](#3-file-by-file-explanation)
+4. [DSA Concepts Used](#4-dsa-concepts)
+5. [Anticipated Viva Questions & Answers](#5-viva-questions)
+
+---
+
+## 1. Interface Layout
+
+Your app has **5 major sections**:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  File Menu Bar                                                       │
+├──────────┬────────────┬────────────┬────────────┬──────────────────┤
+│          │            │            │            │                  │
+│  LEFT    │  ORIGINAL  │ PROCESSED  │ RECON-     │  RIGHT           │
+│  SIDEBAR │  IMAGE     │ IMAGE      │ STRUCTED   │  SIDEBAR         │
+│          │  PANEL     │ PANEL      │ PANEL      │                  │
+│ Filters  │            │            │            │  Compression     │
+│ Geometry │            │            │            │  Statistics      │
+│ Compress │            │            │            │                  │
+│          │            │            │            │                  │
+├──────────┴────────────┴────────────┴────────────┴──────────────────┤
+│  Status Bar                                                          │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 1.1 File Menu (Top-Left)
+| Action | What it does |
+|--------|-------------|
+| **Open Image** (Ctrl+O) | Opens a `.ppm` P6 file → loads into `Matrix<Pixel>` → displays in Original panel |
+| **Save Processed** (Ctrl+S) | Saves the processed image back as `.ppm` P6 |
+| **Exit** | Closes the application |
+
+### 1.2 Left Sidebar — Operation Controls
+
+#### FILTERS Section
+| Button | What happens behind the scenes |
+|--------|-------------------------------|
+| **Grayscale Conversion** | Calls `ImageProcessor::toGrayscale()` → applies BT.601 formula: `gray = 0.299·R + 0.587·G + 0.114·B` to every pixel in the Matrix → result shown in Processed panel |
+| **Sobel Edge Detection** | Calls `ImageProcessor::sobelEdgeDetect()` → creates two `Matrix<int>` 3×3 kernels (Gx, Gy) → convolves over every pixel → computes gradient magnitude `√(Gx² + Gy²)` → result shown in Processed panel |
+
+#### GEOMETRY Section
+| Control | What it does |
+|---------|-------------|
+| **Scale Dropdown** (50%, 100%, 200%) | Select scaling factor |
+| **Scale Button** | Calls `ImageProcessor::scale()` → uses nearest-neighbor interpolation → creates new `Matrix<Pixel>` at new dimensions → shown in Processed panel |
+
+#### COMPRESSION Section
+| Button | What happens |
+|--------|-------------|
+| **Huffman Compress** | Takes processed image (or original if no filter applied) → serializes `Matrix<Pixel>` to byte array → builds frequency table → builds Huffman tree using MinHeap → generates codes → encodes to bitstream → writes `.huf` file → updates stats |
+| **Huffman Decompress** | Reads `.huf` file → rebuilds tree from stored frequencies → decodes bitstream → reconstructs `Matrix<Pixel>` → shown in Reconstructed panel |
+
+### 1.3 Three Image Panels (Center)
+
+| Panel | Purpose | When it updates |
+|-------|---------|----------------|
+| **ORIGINAL** | Shows the raw loaded image | When you open a `.ppm` file |
+| **PROCESSED** | Shows the result after applying a filter/scale | After clicking Grayscale, Sobel, or Scale |
+| **RECONSTRUCTED** | Shows the decompressed image | After clicking Huffman Decompress |
+
+> [!IMPORTANT]
+> The Reconstructed image should be **pixel-identical** to the source that was compressed, because Huffman coding is **lossless**. This is a key viva point!
+
+### 1.4 Right Sidebar — Compression Statistics
+
+| Field | What it shows |
+|-------|---------------|
+| **Original** | Raw data size = `width × height × 3` bytes (3 bytes per pixel: R, G, B) |
+| **Compressed** | Size of the `.huf` file on disk |
+| **Compression Rate** | `(1 - compressed/original) × 100%` — must be ≥ 30% |
+| **Progress Bar** | Visual representation of the compression rate |
+
+### 1.5 Status Bar (Bottom)
+Shows contextual messages like "Image loaded successfully", "Huffman compression complete", etc.
+
+---
+
+## 2. Complete Workflow
+
+### Step-by-step: Load → Process → Compress → Decompress
+
+```mermaid
+flowchart TD
+    A["📁 Open .ppm file"] --> B["Image::load() reads P6 header + RGB bytes"]
+    B --> C["Pixels stored in Matrix<Pixel> (heap-allocated)"]
+    C --> D["Displayed in ORIGINAL panel"]
+    D --> E{"Apply filter?"}
+    E -->|Grayscale| F["BT.601 formula on each pixel"]
+    E -->|Sobel| G["3×3 convolution with Matrix<int> kernels"]
+    E -->|Scale| H["Nearest-neighbor resampling"]
+    F --> I["Result in PROCESSED panel"]
+    G --> I
+    H --> I
+    I --> J["Click Huffman Compress"]
+    J --> K["Serialize Matrix<Pixel> → byte array"]
+    K --> L["Count byte frequencies (0-255)"]
+    L --> M["Build MinHeap with frequency nodes"]
+    M --> N["Extract 2 mins, merge, insert → repeat"]
+    N --> O["Huffman tree built"]
+    O --> P["DFS to generate bit codes per byte"]
+    P --> Q["Encode bytes → compressed bitstream"]
+    Q --> R["Write .huf file"]
+    R --> S["Stats updated in RIGHT sidebar"]
+    S --> T["Click Huffman Decompress"]
+    T --> U["Read .huf → rebuild tree from frequencies"]
+    U --> V["Decode bitstream → byte array"]
+    V --> W["Reconstruct Matrix<Pixel>"]
+    W --> X["Displayed in RECONSTRUCTED panel"]
+```
+
+---
+
+## 3. File-by-File Code Explanation
+
+### 3.1 `Pixel.h` — The Smallest Unit
+```
+struct Pixel { unsigned char r, g, b; }
+```
+- A **plain value type** (POD — Plain Old Data)
+- Each channel is `unsigned char` → 0 to 255
+- **No dynamic memory** → compiler-generated copy/destructor are fine
+- Has `==` and `!=` operators (needed for Huffman frequency counting)
+- Default constructor sets to black `(0, 0, 0)`
+
+**Viva point:** "Why unsigned char?" → Because color values range 0-255, which is exactly the range of an unsigned char (1 byte).
+
+---
+
+### 3.2 `Matrix.h` — The Core DSA Data Structure
+
+This is the **template-based 2D matrix** — the backbone of the entire project.
+
+#### Memory Layout
+```
+Matrix<Pixel> mat(3, 4);   // 3 rows, 4 columns
+
+data → [ptr0][ptr1][ptr2]          ← T** (array of row pointers, new T*[rows])
+        │      │      │
+        ▼      ▼      ▼
+       [P P P P]  [P P P P]  [P P P P]   ← each row: new T[cols]
+```
+
+#### Key DSA: Rule of Three
+The Matrix class implements the **Rule of Three** because it has dynamic memory:
+
+| Method | What it does | Why needed |
+|--------|-------------|------------|
+| **Constructor** `Matrix(r, c)` | `new T*[rows]` + `new T[cols]` per row | Allocates memory |
+| **Destructor** `~Matrix()` | `delete[] data[i]` per row + `delete[] data` | Prevents memory leaks |
+| **Copy Constructor** `Matrix(const Matrix&)` | Allocates fresh memory + copies every element | Prevents double-free (two objects pointing to same memory) |
+| **Copy Assignment** `operator=` | Self-assignment check → deallocate old → allocate new → deep copy | Prevents memory leaks on reassignment |
+
+#### Element Access
+```cpp
+T& operator()(int i, int j)       // read-write: mat(row, col)
+const T& operator()(int i, int j)  // read-only for const matrices
+```
+
+**Viva point:** "Why `operator()` instead of `operator[]`?" → `operator[]` only takes one argument. We need two indices (row, col), so we use `operator()` which can take multiple arguments.
+
+#### Matrix Operations (all return NEW matrices)
+- `operator+` — element-wise addition
+- `operator-` — element-wise subtraction
+- `operator*(scalar)` — scalar multiplication
+- `operator*(Matrix)` — standard O(n³) matrix multiplication
+- `transpose()` — rows ↔ columns
+
+---
+
+### 3.3 `Image.h` / `Image.cpp` — PPM File I/O Wrapper
+
+The Image class **wraps** `Matrix<Pixel>*` with file loading/saving.
+
+#### Memory Management
+```cpp
+Matrix<Pixel>* pixels;    // POINTER — heap-allocated with new
+```
+- Uses `new Matrix<Pixel>(h, w)` to create
+- Uses `delete pixels` to destroy
+- Copy constructor: `new Matrix<Pixel>(*other.pixels)` — triggers Matrix's deep copy
+- Also follows **Rule of Three**
+
+#### PPM P6 File Format
+```
+P6                    ← magic number (identifies format)
+640 480               ← width height
+255                   ← max color value
+[binary RGB data]     ← width × height × 3 bytes, row by row
+```
+
+**Loading process (`Image::load`):**
+1. Open file in binary mode
+2. Read magic number `P6`
+3. Skip comments (lines starting with `#`)
+4. Read width, height, maxVal
+5. Allocate `new Matrix<Pixel>(height, width)`
+6. Read 3 bytes per pixel (R, G, B) into matrix
+
+**Viva point:** "Why P6 and not P3?" → P6 is **binary** (compact, fast), P3 is **ASCII** (human-readable but 5-10x larger). We use P6 for efficiency.
+
+---
+
+### 3.4 `ImageProcessor.cpp` — Algorithms
+
+All methods are **static** — they take a source Image and return a **new** Image (non-destructive).
+
+#### Grayscale — BT.601 Formula
+```cpp
+gray = 0.299 * R + 0.587 * G + 0.114 * B
+```
+- **Why these specific weights?** Human eyes are most sensitive to Green, then Red, then Blue. ITU-R BT.601 standard.
+- Output: each pixel becomes `Pixel(gray, gray, gray)` — all channels equal.
+- **Time complexity:** O(W × H) — visits every pixel once.
+
+#### Sobel Edge Detection — 2D Convolution
+```
+Gx (horizontal edges):        Gy (vertical edges):
+ -1   0   1                    -1  -2  -1
+ -2   0   2                     0   0   0
+ -1   0   1                     1   2   1
+```
+
+**Process for each pixel:**
+1. Place 3×3 kernel centered on the pixel
+2. Multiply each kernel value by the **luminance** of the corresponding neighbor
+3. Sum all 9 products → gives `sumX` (horizontal gradient) and `sumY` (vertical gradient)
+4. Gradient magnitude = `√(sumX² + sumY²)`, clamped to [0, 255]
+5. Bright = edge, dark = flat area
+
+**Viva points:**
+- "What does Sobel detect?" → Edges — areas where pixel intensity changes rapidly
+- "Why two kernels?" → Gx detects vertical edges (horizontal changes), Gy detects horizontal edges (vertical changes)
+- "Why convert to grayscale first?" → Edges are about intensity change, not color
+- "Boundary handling?" → Clamping (repeat edge pixels)
+- **Time complexity:** O(W × H × 9) = O(W × H) — 9 multiplications per pixel
+
+#### Nearest-Neighbor Scaling
+```cpp
+srcRow = i * srcH / newH;
+srcCol = j * srcW / newW;
+```
+- For each pixel in the output, find the **closest** pixel in the source
+- No interpolation (that would be bilinear/bicubic)
+- **50%** → halves dimensions, **200%** → doubles dimensions
+
+**Viva point:** "Why nearest-neighbor?" → Simplest scaling algorithm. No blending, preserves sharp edges. More advanced methods (bilinear, bicubic) would blur.
+
+---
+
+### 3.5 `HuffmanCompressor.h/.cpp` — The Main DSA Component
+
+This is the **most important file for viva** — it demonstrates:
+- Binary Trees
+- Min-Heap (Priority Queue)
+- Greedy Algorithm
+- Bit manipulation
+- File I/O (binary)
+
+#### MinHeap — Custom Priority Queue
+```cpp
+class MinHeap {
+    HuffmanNode** data;   // dynamic array of pointers
+    int capacity, size;
+};
+```
+
+| Operation | How | Complexity |
+|-----------|-----|-----------|
+| `insert()` | Place at end → heapifyUp (swap with parent while smaller) | O(log n) |
+| `extractMin()` | Take root → move last to root → heapifyDown (swap with smaller child) | O(log n) |
+| Dynamic resize | When full: `new` array with 2× capacity, copy, `delete[]` old | O(n) amortized |
+
+**Heap property:** Parent's frequency ≤ children's frequencies (min-heap).
+
+#### Huffman Tree Building (Greedy Algorithm)
+
+```mermaid
+flowchart TD
+    A["Count frequency of each byte (0-255)"] --> B["Insert leaf nodes into MinHeap"]
+    B --> C{"Heap size > 1?"}
+    C -->|Yes| D["Extract two minimum-frequency nodes"]
+    D --> E["Create internal node with freq = sum"]
+    E --> F["Set left=min1, right=min2"]
+    F --> G["Insert merged node back"]
+    G --> C
+    C -->|No| H["Last node = ROOT of Huffman tree"]
+    H --> I["DFS: left='0', right='1' → build code table"]
+```
+
+**Example:**
+```
+Bytes: A(freq=5), B(freq=9), C(freq=12), D(freq=13), E(freq=16)
+
+Step 1: Extract A(5) + B(9) → Internal(14)
+Step 2: Extract C(12) + D(13) → Internal(25)  
+Step 3: Extract Internal(14) + E(16) → Internal(30)
+Step 4: Extract Internal(25) + Internal(30) → ROOT(55)
+
+Resulting codes:
+  C = 00    (2 bits — frequent, shorter code)
+  D = 01    (2 bits)
+  A = 100   (3 bits — less frequent, longer code)
+  B = 101   (3 bits)
+  E = 11    (2 bits)
+```
+
+**Viva point:** "Why is Huffman greedy?" → At each step, we merge the two **least frequent** nodes. This greedy choice leads to the globally optimal prefix code (proven by Huffman).
+
+**Viva point:** "What's a prefix code?" → No code is a prefix of another code. This means we can decode unambiguously without separators.
+
+#### Compression Steps (in `compress()`)
+
+| Step | What happens | Code line |
+|------|-------------|-----------|
+| 1 | Serialize `Matrix<Pixel>` → flat `unsigned char[]` array (R,G,B,R,G,B,...) | Lines 128-137 |
+| 2 | Count frequency of each byte value (0-255) | Lines 140-147 |
+| 3 | Build Huffman tree using MinHeap | Lines 149-184 |
+| 4 | Encode: replace each byte with its Huffman bit-code → packed bitstream | Lines 187-209 |
+| 5 | Write `.huf` binary file with header + bitstream | Lines 212-243 |
+
+#### `.huf` File Format
+
+```
+┌─────────────────────────────────────┐
+│ "HUF"              (3 bytes magic)  │
+│ width               (4 bytes int)   │
+│ height              (4 bytes int)   │
+│ uniqueCount         (4 bytes int)   │
+├─────────────────────────────────────┤
+│ For each unique byte:               │
+│   byte value        (1 byte)        │
+│   frequency         (4 bytes int)   │
+│ (repeated uniqueCount times)        │
+├─────────────────────────────────────┤
+│ totalRawBytes       (4 bytes int)   │
+│ compressedBytes     (4 bytes int)   │
+│ paddingBits         (1 byte)        │
+├─────────────────────────────────────┤
+│ Compressed bitstream                │
+│ (compressedBytes of data)           │
+└─────────────────────────────────────┘
+```
+
+#### Decompression Steps (in `decompress()`)
+
+| Step | What happens |
+|------|-------------|
+| 1 | Read `.huf` header → get width, height, frequencies |
+| 2 | Rebuild **identical** Huffman tree from stored frequencies |
+| 3 | Walk tree bit-by-bit: `0`→left, `1`→right. At leaf → output byte |
+| 4 | Reassemble bytes into `Matrix<Pixel>` (every 3 bytes = one pixel) |
+
+**Viva point:** "How is it lossless?" → The tree is **deterministically rebuilt** from the same frequencies, producing the same codes. Every bit decodes back to the exact original byte.
+
+---
+
+### 3.6 `MainWindow.cpp` — Qt GUI
+
+| Function | What it does |
+|----------|-------------|
+| `setupUi()` | Builds the entire layout: left sidebar, 3 canvas panels, right sidebar |
+| `applyStitchStylesheet()` | Applies dark theme CSS: colors, fonts, hover effects |
+| `onOpenImage()` | File dialog → `Image::load()` → `displayImage()` |
+| `onGrayscale()` | `ImageProcessor::toGrayscale()` → display |
+| `onEdgeDetect()` | `ImageProcessor::sobelEdgeDetect()` → display |
+| `onScale()` | `ImageProcessor::scale()` → display |
+| `onCompress()` | File dialog → `compressor.compress()` → update stats |
+| `onDecompress()` | `compressor.decompress()` → build Image → display |
+| `displayImage()` | Converts `Matrix<Pixel>` → `QImage` → `QPixmap` → scaled to fit canvas |
+
+---
+
+## 4. DSA Concepts Used
+
+| Concept | Where in Project | Complexity |
+|---------|-----------------|-----------|
+| **Templates** | `Matrix<T>` — works with `Pixel`, `int`, any type | — |
+| **Dynamic Memory** (`new`/`delete`) | Matrix rows, Image pixels pointer, Heap array, Huffman nodes, raw/compressed arrays | — |
+| **Rule of Three** | Matrix (copy ctor, operator=, destructor), Image (same) | — |
+| **Binary Tree** | Huffman tree (HuffmanNode with left/right children) | — |
+| **Min-Heap** (Priority Queue) | MinHeap class for building Huffman tree | Insert: O(log n), Extract: O(log n) |
+| **Greedy Algorithm** | Huffman coding — always merge two least-frequent | Optimal prefix code |
+| **2D Convolution** | Sobel edge detection with 3×3 kernels | O(W × H) |
+| **Bit Manipulation** | Encoding bytes to bitstream, decoding bits from bytes | O(1) per bit |
+| **Binary File I/O** | PPM P6 read/write, .huf read/write | O(n) |
+
+---
+
+## 5. Anticipated Viva Questions & Answers
+
+### Matrix & Memory Management
+
+**Q1: Why do you use `new` and `delete` instead of `std::vector`?**
+> Project requirement: demonstrate manual dynamic memory management, which is a core DSA skill. Vectors hide the allocation/deallocation complexity.
+
+**Q2: What is the Rule of Three? Why does your Matrix need it?**
+> If a class manages a resource (heap memory), it must define: (1) Destructor, (2) Copy Constructor, (3) Copy Assignment Operator. Without them, copying a Matrix would give two objects pointing to the same memory → double-free crash.
+
+**Q3: What happens if you don't have a copy constructor?**
+> The compiler generates a **shallow copy** — both matrices would share the same `data` pointer. When one is destroyed, it frees the memory. The other now has a **dangling pointer** → undefined behavior / crash.
+
+**Q4: Why is Matrix a template?**
+> So it can store any type: `Matrix<Pixel>` for images, `Matrix<int>` for Sobel kernels, `Matrix<double>` for future use. One implementation, multiple data types.
+
+**Q5: What is the time complexity of accessing `mat(i, j)`?**
+> O(1) — direct pointer dereference: `data[i][j]`. First dereference gets the row pointer, second gets the element.
+
+**Q6: Why row-major `T**` instead of a flat 1D array?**
+> `T**` gives intuitive 2D access `data[i][j]`. A flat array would need index calculation `data[i * cols + j]`. Both are O(1), but `T**` is clearer for educational purposes.
+
+### Image Processing
+
+**Q7: Why PPM format instead of PNG or JPEG?**
+> PPM is the simplest uncompressed image format — just a header and raw RGB bytes. No external libraries needed to read/write it, which satisfies our "no OpenCV" constraint.
+
+**Q8: What does the grayscale formula represent?**
+> ITU-R BT.601 luminance: `0.299R + 0.587G + 0.114B`. These weights reflect human eye sensitivity — we see green most (0.587), then red (0.299), then blue (0.114). Equal weights (R+G+B)/3 would look wrong.
+
+**Q9: How does Sobel edge detection work?**
+> It computes the **gradient** (rate of change) of pixel intensity. Two 3×3 kernels detect horizontal and vertical edges separately. The magnitude `√(Gx² + Gy²)` gives overall edge strength. Strong edges appear bright, flat areas appear dark.
+
+**Q10: What is convolution?**
+> Sliding a kernel (small matrix) over an image, at each position multiplying overlapping values and summing them. It's a mathematical operation that extracts features (edges, blur, sharpen) depending on the kernel values.
+
+**Q11: How do you handle image boundaries in Sobel?**
+> Clamping — if a neighbor index is out of bounds, we clamp it to the nearest valid index. So edge pixels repeat the border value.
+
+### Huffman Coding (Most Important!)
+
+**Q12: What is Huffman coding?**
+> A lossless data compression algorithm that assigns variable-length binary codes to symbols based on their frequency. Frequent symbols get short codes, rare symbols get long codes. This reduces the total number of bits needed.
+
+**Q13: Why is it lossless?**
+> Every original byte is perfectly recoverable. The Huffman code is a **prefix code** — no code is a prefix of another — so decoding is unambiguous. We store the frequency table in the file, so the decoder rebuilds the exact same tree.
+
+**Q14: Walk me through how you build the Huffman tree.**
+> 1. Count frequency of each byte (0-255) in the raw data
+> 2. Create a leaf HuffmanNode for each byte that appears
+> 3. Insert all leaves into a MinHeap (priority queue)
+> 4. Repeat: extract two nodes with lowest frequency, create a parent node with freq = sum, insert parent back
+> 5. When one node remains, it's the root
+
+**Q15: Why do you use a MinHeap?**
+> To efficiently get the two lowest-frequency nodes at each step. Extract-min is O(log n), and we do it 2×(n-1) times → total O(n log n). Without a heap, finding the minimum would be O(n) each time → O(n²) total.
+
+**Q16: How does your MinHeap work internally?**
+> It's a **complete binary tree** stored as a dynamic array. For node at index `i`: parent = `(i-1)/2`, left child = `2i+1`, right child = `2i+2`. HeapifyUp (after insert) swaps with parent while smaller. HeapifyDown (after extract) swaps with smaller child.
+
+**Q17: How do you encode data using the Huffman tree?**
+> After building the tree, I do a DFS: going left adds '0', going right adds '1'. At each leaf, the accumulated path is that byte's code. Then I replace each byte in the original data with its code, packing bits into bytes.
+
+**Q18: How do you handle the "padding bits" issue?**
+> The total compressed bits might not be a multiple of 8. I calculate `paddingBits = compressedBytes×8 - totalBits` and store it in the file header. During decompression, I stop reading after `totalBits` bits.
+
+**Q19: What is the compression rate you achieve?**
+> Depends on the image. Images with many repeated colors compress better. The formula is `(1 - compressed/original) × 100%`. The project requires ≥ 30%.
+
+**Q20: Why does grayscale compress better than color?**
+> Grayscale images only have ~256 possible pixel values (0-255 repeated 3 times), while color images can have up to 256³ = 16.7M unique RGB combinations. Fewer unique values → more repetition → better Huffman compression.
+
+**Q21: How do you deserialize back to `Matrix<Pixel>`?**
+> The decoded byte array is in R,G,B,R,G,B... order. I read 3 consecutive bytes, create a Pixel(R,G,B), and place it in the matrix at position (row, col).
+
+**Q22: What is the time complexity of Huffman compression?**
+> - Frequency counting: O(n) where n = total bytes
+> - Tree building: O(k log k) where k = unique byte values (max 256)
+> - Encoding: O(n × average_code_length)
+> - Total: **O(n)** since k ≤ 256 is constant
+
+**Q23: What if all bytes are the same value?**
+> Edge case! If uniqueCount == 1, I assign a single code `"0"` (1 bit per byte). The tree has only one leaf node. This still compresses well: 1 bit vs 8 bits = 87.5% compression.
+
+### General / Architecture
+
+**Q24: Why don't you use OpenCV or any image library?**
+> Project constraint. This forces us to implement everything manually using DSA concepts — file parsing, matrix operations, pixel manipulation, compression — which is the educational purpose.
+
+**Q25: Why Qt for the GUI?**
+> Qt is a powerful C++ GUI framework. It provides widgets (buttons, labels), layouts, signals/slots for event handling, and built-in image display. It integrates naturally with C++ code.
+
+**Q26: How does `displayImage()` work?**
+> 1. Iterate over `Matrix<Pixel>`, copy each pixel's RGB values into a `QImage` scanline buffer
+> 2. Convert `QImage` → `QPixmap` 
+> 3. Scale to fit the canvas while keeping aspect ratio
+> 4. Set as the QLabel's pixmap
+
+**Q27: What design pattern does ImageProcessor use?**
+> **Static utility class** — all methods are `static`, no instance state. It's essentially a namespace of pure functions. Each method takes input, returns new output (non-destructive).
+
+**Q28: Why does Image store `Matrix<Pixel>*` (pointer) instead of `Matrix<Pixel>` (value)?**
+> So we can have a "null" state (`pixels = nullptr`) when no image is loaded. `isLoaded()` checks this. Also allows deferred allocation — the default constructor creates an empty Image without allocating a matrix.
+
+**Q29: What happens when I click a button?**
+> Qt's **signal-slot mechanism**: `QPushButton::clicked` signal is connected to a slot (e.g., `MainWindow::onGrayscale`). When the button emits `clicked()`, Qt automatically calls the connected slot function.
+
+**Q30: How is your project structured?**
+> ```
+> Pixel.h          — Data: single RGB pixel (value type)
+> Matrix.h         — DSA: template 2D matrix with manual memory
+> Image.h/.cpp     — I/O: PPM P6 file reader/writer wrapping Matrix<Pixel>
+> ImageProcessor.h/.cpp — Algorithms: grayscale, Sobel, scaling
+> HuffmanCompressor.h/.cpp — Compression: MinHeap + Huffman tree
+> MainWindow.h/.cpp — GUI: Qt interface connecting everything
+> main.cpp         — Entry point: creates QApplication + MainWindow
+> ```
+
+---
+
+## Quick Reference: Key Numbers to Remember
+
+| Fact | Value |
+|------|-------|
+| Pixel size | 3 bytes (R + G + B) |
+| Raw image size | W × H × 3 bytes |
+| Huffman tree nodes | max 256 leaves + 255 internal = 511 nodes |
+| MinHeap operations | O(log n) insert/extract |
+| Sobel kernel size | 3×3 = 9 multiplications per pixel |
+| BT.601 weights | R=0.299, G=0.587, B=0.114 |
+| PPM magic number | "P6" (binary), "P3" (ASCII) |
+| .huf magic number | "HUF" |
+| Target compression | ≥ 30% |
+

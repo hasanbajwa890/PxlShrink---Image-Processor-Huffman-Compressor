@@ -1,0 +1,5 @@
+C:/Users/hasan/Downloads/PxlShrink/DSA_Image_Processor/build/CMakeFiles/DSA_Image_Project.dir
+C:/Users/hasan/Downloads/PxlShrink/DSA_Image_Processor/build/CMakeFiles/edit_cache.dir
+C:/Users/hasan/Downloads/PxlShrink/DSA_Image_Processor/build/CMakeFiles/rebuild_cache.dir
+C:/Users/hasan/Downloads/PxlShrink/DSA_Image_Processor/build/CMakeFiles/DSA_Image_Project_autogen_timestamp_deps.dir
+C:/Users/hasan/Downloads/PxlShrink/DSA_Image_Processor/build/CMakeFiles/DSA_Image_Project_autogen.dir
